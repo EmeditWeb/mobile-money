@@ -10,6 +10,7 @@ import { createError } from "../middleware/errorHandler";
 
 import { pool } from "../config/database";
 import { sanctionService } from "../services/sanctionService";
+import { notifyReceivingAnchorStatus } from "../services/webhookService";
 
 const router = Router();
 const transactionModel = new TransactionModel();
@@ -228,6 +229,8 @@ router.post(
       receiver_id,
       fields,
       lang,
+      callback_url,
+      callback_secret,
     } = req.body;
 
     // --- Input Validation ---
@@ -389,7 +392,13 @@ router.post(
             ? null
             : configuredAsset.getIssuer(),
           lang: lang || "en",
-          compliance_status: isComplianceFlagged ? "PENDING_COMPLIANCE" : "PASSED",
+          // Receiving anchors register their callback and shared secret with
+          // the transfer. They are used only for outbound status webhooks.
+          callback_url: callback_url || txFields.callback_url || null,
+          callback_secret: callback_secret || txFields.callback_secret || null,
+          compliance_status: isComplianceFlagged
+            ? "PENDING_COMPLIANCE"
+            : "PASSED",
           ...(isComplianceFlagged && topMatch
             ? {
                 compliance_match: {
@@ -418,6 +427,14 @@ router.post(
           ? `SEP-31 cross-border payment from ${finalSenderId} to ${finalReceiverId} flagged for compliance review: matched ${topMatch?.entity?.name}`
           : `SEP-31 cross-border payment from ${finalSenderId} to ${finalReceiverId}`,
       });
+
+      if (initialStatus === Sep31Status.PendingReceiver) {
+        await notifyReceivingAnchorStatus(
+          newTransaction,
+          Sep31Status.PendingReceiver,
+          metadata,
+        );
+      }
 
       // Write incident entry into audit logs if flagged
       if (isComplianceFlagged && topMatch) {
